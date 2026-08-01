@@ -4,7 +4,7 @@
  */
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
-const { attachHandlers, setupBotCommands } = require('./src/bot');
+const { handleUpdate, setupBotCommands } = require('./src/bot');
 
 const token = process.env.BOT_TOKEN;
 
@@ -18,8 +18,14 @@ const bot = new TelegramBot(token, { polling: true });
 
 console.log('🚀 Quiz Fusion Quest Bot starting in LOCAL POLLING mode...');
 
-// Attach all command and callback handlers
-attachHandlers(bot);
+// Route all incoming updates through handleUpdate
+bot.on('message', async (msg) => {
+  await handleUpdate(bot, { message: msg });
+});
+
+bot.on('callback_query', async (query) => {
+  await handleUpdate(bot, { callback_query: query });
+});
 
 // Auto-register commands menu in Telegram on startup
 setupBotCommands(bot).then(() => {

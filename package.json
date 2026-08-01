@@ -1,0 +1,26 @@
+{
+  "name": "txt-mixer-telegram-bot",
+  "version": "1.0.0",
+  "description": "Quiz Fusion Quest — Test Merger Telegram Bot ready for Vercel Serverless Deployment",
+  "main": "api/webhook.js",
+  "scripts": {
+    "dev": "node local.js",
+    "start": "node local.js"
+  },
+  "keywords": [
+    "telegram-bot",
+    "txt-mixer",
+    "quiz-fusion",
+    "vercel",
+    "serverless"
+  ],
+  "author": "abhishekprajgs20-svg",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "node-telegram-bot-api": "^0.66.0"
+  },
+  "engines": {
+    "node": ">=18.x"
+  }
+}

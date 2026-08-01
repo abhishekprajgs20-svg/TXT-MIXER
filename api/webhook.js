@@ -1,11 +1,10 @@
 /**
  * Quiz Fusion Quest — Vercel Serverless Webhook Handler
- * Receives Telegram webhook POST requests and processes updates
+ * Properly awaits handleUpdate so Vercel never terminates the container early
  */
 const TelegramBot = require('node-telegram-bot-api');
-const { attachHandlers, setupBotCommands } = require('../src/bot');
+const { handleUpdate, setupBotCommands } = require('../src/bot');
 
-// Cache bot instance for serverless container reuse
 let botInstance = null;
 
 function getBot() {
@@ -15,7 +14,6 @@ function getBot() {
   }
   if (!botInstance) {
     botInstance = new TelegramBot(token, { polling: false });
-    attachHandlers(botInstance);
   }
   return botInstance;
 }
@@ -24,9 +22,7 @@ module.exports = async (req, res) => {
   try {
     const bot = getBot();
 
-    // GET request: show health status and allow webhook / command sync
     if (req.method === 'GET') {
-      // If user passes ?sync_commands=true, re-register commands menu
       if (req.query && req.query.sync_commands === 'true') {
         const success = await setupBotCommands(bot);
         return res.status(200).json({
@@ -47,13 +43,11 @@ module.exports = async (req, res) => {
       });
     }
 
-    // POST request: process Telegram update
     if (req.method === 'POST') {
       const update = req.body;
-      if (update && (update.message || update.callback_query || update.edited_message)) {
-        // Also fire setupBotCommands in background once per cold start to guarantee menu registration
-        setupBotCommands(bot).catch(() => {});
-        await bot.processUpdate(update);
+      if (update) {
+        // AWAIT handleUpdate so Vercel keeps lambda alive until bot sends Telegram messages!
+        await handleUpdate(bot, update);
       }
       return res.status(200).json({ ok: true });
     }

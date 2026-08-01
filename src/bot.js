@@ -1,12 +1,122 @@
 /**
- * Quiz Fusion Quest — Vercel-Safe Telegram Bot Logic with Cloud DB & Interactive Queue Manager
- * Fixed:
- * 1. Cloud Gist Database (db.js) ensures 100% queue persistence across all Vercel Serverless containers
+ * Quiz Fusion Quest — Vercel-Safe Telegram Bot Logic (Self-Contained & Zero PAT Leaks)
+ * Features:
+ * 1. Zero Race Condition Queue Storage: Each uploaded .txt file is saved as an individual file in /tmp/qf_user_ID/
  * 2. Interactive Queue Manager: Users can reorder (⬆️ Up / ⬇️ Down) or delete (❌ Remove) individual files
- * 3. No Markdown parse_mode in dynamic text to prevent ETELEGRAM 400 entity parsing errors
+ * 3. No Markdown parse_mode in dynamic messages to prevent ETELEGRAM 400 entity parsing errors
  */
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 const { detectBlocks, fuseFiles } = require('./parser');
-const db = require('./db');
+
+const TMP_DIR = os.tmpdir();
+
+function getUserDir(userId) {
+  const dir = path.join(TMP_DIR, `qf_user_${userId}`);
+  if (!fs.existsSync(dir)) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch (e) {}
+  }
+  return dir;
+}
+
+/**
+ * Reads all queued files for a user from their directory, sorted chronologically
+ */
+function getQueue(userId) {
+  try {
+    const dir = getUserDir(userId);
+    const files = fs.readdirSync(dir)
+      .filter(f => f.startsWith('file_') && f.endsWith('.json'))
+      .sort();
+
+    const queue = [];
+    for (const f of files) {
+      try {
+        const data = fs.readFileSync(path.join(dir, f), 'utf8');
+        const obj = JSON.parse(data);
+        obj._filename = f; // store disk filename for reordering/deleting
+        queue.push(obj);
+      } catch (err) {}
+    }
+    return queue;
+  } catch (e) {
+    return [];
+  }
+}
+
+/**
+ * Saves an ordered queue array back to disk, preserving sequential order
+ */
+function saveQueueOrder(userId, queue) {
+  try {
+    const dir = getUserDir(userId);
+    // Remove existing queue files
+    const existing = fs.readdirSync(dir).filter(f => f.startsWith('file_') && f.endsWith('.json'));
+    for (const f of existing) {
+      try { fs.unlinkSync(path.join(dir, f)); } catch (e) {}
+    }
+    // Write new files with sequential timestamps
+    const baseTime = Date.now();
+    queue.forEach((item, index) => {
+      const padIndex = String(index).padStart(4, '0');
+      const filename = `file_${baseTime}_${padIndex}.json`;
+      const copy = { name: item.name, content: item.content, count: item.count };
+      fs.writeFileSync(path.join(dir, filename), JSON.stringify(copy), 'utf8');
+    });
+  } catch (e) {}
+}
+
+/**
+ * Appends a new file to the user's queue without overwriting concurrent uploads
+ */
+function addFileToQueue(userId, fileObj) {
+  try {
+    const dir = getUserDir(userId);
+    const timestamp = Date.now();
+    const rand = Math.random().toString(36).substring(2, 7);
+    const filename = `file_${timestamp}_${rand}.json`;
+    fs.writeFileSync(path.join(dir, filename), JSON.stringify(fileObj), 'utf8');
+  } catch (e) {}
+}
+
+/**
+ * Clears all queued files for a user
+ */
+function clearQueue(userId) {
+  try {
+    const dir = getUserDir(userId);
+    const files = fs.readdirSync(dir).filter(f => f.startsWith('file_') && f.endsWith('.json'));
+    for (const f of files) {
+      try {
+        fs.unlinkSync(path.join(dir, f));
+      } catch (err) {}
+    }
+  } catch (e) {}
+}
+
+function getSettingsFilePath(userId) {
+  return path.join(getUserDir(userId), 'settings.json');
+}
+
+function getSettings(userId) {
+  try {
+    const filePath = getSettingsFilePath(userId);
+    if (fs.existsSync(filePath)) {
+      return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    }
+  } catch (e) {}
+  return { shuffleQuestions: false, shuffleOptions: false };
+}
+
+function saveSettings(userId, settings) {
+  try {
+    const filePath = getSettingsFilePath(userId);
+    fs.writeFileSync(filePath, JSON.stringify(settings), 'utf8');
+  } catch (e) {}
+}
 
 const COMMAND_LIST = [
   { command: 'start', description: '🕹️ Quiz Fusion Bot shuru karein' },
@@ -124,8 +234,8 @@ async function handleUpdate(bot, update) {
 
     // /start command
     if (text.startsWith('/start')) {
-      const settings = await db.getSettings(userId);
-      const queue = await db.getQueue(userId);
+      const settings = getSettings(userId);
+      const queue = getQueue(userId);
       const totalQs = queue.reduce((sum, f) => sum + f.count, 0);
 
       await setupBotCommands(bot).catch(() => {});
@@ -135,7 +245,7 @@ async function handleUpdate(bot, update) {
 Apni .txt test files upload karo, sahi sequence mein arrange karo, aur ek SINGLE merged file banao — question no. apne aap serial (Q1, Q2, Q3...) ho jaayenge!
 
 ✨ Features & Power-ups:
-🕹️ Unlimited .txt file uploads (Cloud persistent)
+🕹️ Unlimited .txt file uploads
 📋 Reorder queue any time (/queue)
 😂 Standard Format (😂 marker) & Compact Format (1️⃣ emoji) support
 🔀 Shuffle Questions across all files
@@ -194,8 +304,8 @@ Koi bhi .txt file bhejein.
 
     // /settings command
     if (text.startsWith('/settings')) {
-      const settings = await db.getSettings(userId);
-      const queue = await db.getQueue(userId);
+      const settings = getSettings(userId);
+      const queue = getQueue(userId);
       const totalQs = queue.reduce((sum, f) => sum + f.count, 0);
 
       const settingsMsg = `⚙️ POWER-UPS (SETTINGS)\n\n` +
@@ -211,7 +321,7 @@ Koi bhi .txt file bhejein.
 
     // /queue command
     if (text.startsWith('/queue')) {
-      const queue = await db.getQueue(userId);
+      const queue = getQueue(userId);
       await bot.sendMessage(chatId, renderQueueText(queue), {
         reply_markup: buildQueueReorderKeyboard(queue)
       });
@@ -220,8 +330,8 @@ Koi bhi .txt file bhejein.
 
     // /clear command
     if (text.startsWith('/clear')) {
-      await db.saveQueue(userId, []);
-      const settings = await db.getSettings(userId);
+      clearQueue(userId);
+      const settings = getSettings(userId);
       await bot.sendMessage(chatId, '🗑️ Queue Clear Ho Gayi Hai! Ab aap nayi .txt files upload kar sakte hain.', {
         reply_markup: buildSettingsKeyboard(settings, 0)
       });
@@ -253,16 +363,15 @@ Koi bhi .txt file bhejein.
         const content = await res.text();
         const blocks = detectBlocks(content);
 
-        const queue = await db.getQueue(userId);
-        queue.push({
+        addFileToQueue(userId, {
           name: doc.file_name,
           content: content,
           count: blocks.length
         });
-        await db.saveQueue(userId, queue);
 
+        const queue = getQueue(userId);
         const totalQs = queue.reduce((sum, f) => sum + f.count, 0);
-        const settings = await db.getSettings(userId);
+        const settings = getSettings(userId);
 
         const loadedMsg = `🕹️ CARTRIDGE LOADED — Level ${queue.length}\n\n` +
           `📄 File: ${doc.file_name}\n` +
@@ -290,12 +399,12 @@ Koi bhi .txt file bhejein.
     const userId = query.from.id;
     const data = query.data;
 
-    const settings = await db.getSettings(userId);
-    let queue = await db.getQueue(userId);
+    const settings = getSettings(userId);
+    let queue = getQueue(userId);
 
     if (data === 'toggle_shuffle_qs') {
       settings.shuffleQuestions = !settings.shuffleQuestions;
-      await db.saveSettings(userId, settings);
+      saveSettings(userId, settings);
       const totalQs = queue.reduce((sum, f) => sum + f.count, 0);
       await bot.answerCallbackQuery(query.id, {
         text: `Shuffle Questions: ${settings.shuffleQuestions ? 'ON' : 'OFF'}`
@@ -306,7 +415,7 @@ Koi bhi .txt file bhejein.
       ).catch(() => {});
     } else if (data === 'toggle_shuffle_opt') {
       settings.shuffleOptions = !settings.shuffleOptions;
-      await db.saveSettings(userId, settings);
+      saveSettings(userId, settings);
       const totalQs = queue.reduce((sum, f) => sum + f.count, 0);
       await bot.answerCallbackQuery(query.id, {
         text: `Shuffle Options: ${settings.shuffleOptions ? 'ON' : 'OFF'}`
@@ -329,7 +438,7 @@ Koi bhi .txt file bhejein.
         const temp = queue[idx - 1];
         queue[idx - 1] = queue[idx];
         queue[idx] = temp;
-        await db.saveQueue(userId, queue);
+        saveQueueOrder(userId, queue);
         await bot.answerCallbackQuery(query.id, { text: `Moved up: Level ${idx + 1} ➔ Level ${idx}` }).catch(() => {});
         await bot.editMessageText(renderQueueText(queue), {
           chat_id: chatId,
@@ -345,7 +454,7 @@ Koi bhi .txt file bhejein.
         const temp = queue[idx + 1];
         queue[idx + 1] = queue[idx];
         queue[idx] = temp;
-        await db.saveQueue(userId, queue);
+        saveQueueOrder(userId, queue);
         await bot.answerCallbackQuery(query.id, { text: `Moved down: Level ${idx + 1} ➔ Level ${idx + 2}` }).catch(() => {});
         await bot.editMessageText(renderQueueText(queue), {
           chat_id: chatId,
@@ -360,7 +469,7 @@ Koi bhi .txt file bhejein.
       if (idx >= 0 && idx < queue.length) {
         const removedName = queue[idx].name;
         queue.splice(idx, 1);
-        await db.saveQueue(userId, queue);
+        saveQueueOrder(userId, queue);
         await bot.answerCallbackQuery(query.id, { text: `❌ Removed: ${removedName}` }).catch(() => {});
         await bot.editMessageText(renderQueueText(queue), {
           chat_id: chatId,
@@ -371,7 +480,7 @@ Koi bhi .txt file bhejein.
         await bot.answerCallbackQuery(query.id).catch(() => {});
       }
     } else if (data === 'clear_queue') {
-      await db.saveQueue(userId, []);
+      clearQueue(userId);
       await bot.answerCallbackQuery(query.id, { text: '🗑️ Queue cleared' }).catch(() => {});
       await bot.sendMessage(chatId, '🗑️ Queue clear ho gayi hai. Nayi files bhej sakte hain.');
     } else if (data === 'show_settings') {
@@ -395,8 +504,8 @@ Koi bhi .txt file bhejein.
 }
 
 async function performFusion(bot, chatId, userId) {
-  const queue = await db.getQueue(userId);
-  const settings = await db.getSettings(userId);
+  const queue = getQueue(userId);
+  const settings = getSettings(userId);
 
   if (queue.length === 0) {
     return bot.sendMessage(
